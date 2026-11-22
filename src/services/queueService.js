@@ -1,10 +1,18 @@
-// Single Source of Truth for Queue Rules, Data & State Management
+import { supabase, isSupabaseConfigured } from './supabaseClient.js';
 
+/**
+ * ══════════════════════════════════════════════════════════════════════════
+ * SINGLE SOURCE OF TRUTH: Queue Business Rules & Realtime Synchronization
+ * Implementing docs/03-flows-rules.md
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+
+// Initial Seed Constants
 export const DEFAULT_SERVICES = [
-  { id: 'haircut', nameEn: 'Haircut', nameGu: 'હેરકટ', duration: 30, price: 150 },
-  { id: 'beard_trim', nameEn: 'Beard trim', nameGu: 'દાઢી ટ્રીમ', duration: 15, price: 80 },
-  { id: 'hair_spa', nameEn: 'Hair spa', nameGu: 'હેર સ્પા', duration: 45, price: 400 },
-  { id: 'facial', nameEn: 'Facial', nameGu: 'ફેસિયલ', duration: 40, price: 350 },
+  { id: 'haircut', nameEn: 'Haircut', nameGu: 'હેરકટ', duration: 30, price: 150, active: true },
+  { id: 'beard_trim', nameEn: 'Beard trim', nameGu: 'દાઢી ટ્રીમ', duration: 15, price: 80, active: true },
+  { id: 'hair_spa', nameEn: 'Hair spa', nameGu: 'હેર સ્પા', duration: 45, price: 400, active: true },
+  { id: 'facial', nameEn: 'Facial', nameGu: 'ફેસિયલ', duration: 40, price: 350, active: true },
 ];
 
 export const DEFAULT_BARBERS = [
@@ -40,7 +48,13 @@ export const DEFAULT_BARBERS = [
   },
 ];
 
-// Seed initial queue items to match brief ("6 people waiting · about 50 min")
+export const DEFAULT_SETTINGS = {
+  id: 'default',
+  onlineQueueOpen: true,
+  closingTime: '21:00:00',
+  cutoffMinutes: 30,
+};
+
 const SEED_QUEUE = [
   {
     id: 'q-10',
@@ -121,20 +135,31 @@ const SEED_QUEUE = [
   },
 ];
 
+// Unidirectional State Machine Definition (docs/03-flows-rules.md Section 2)
+export const VALID_TRANSITIONS = {
+  'Waiting': ['Called', 'Cancelled'],
+  'Called': ['In chair', 'No-show'],
+  'In chair': ['Done'],
+  'Done': [],
+  'Cancelled': [],
+  'No-show': [],
+};
+
 const STORAGE_KEYS = {
   QUEUE: 'salon_queue_items',
   BARBERS: 'salon_barbers',
   SERVICES: 'salon_services',
+  SETTINGS: 'salon_settings',
   ACTIVE_TOKEN: 'salon_active_token_id',
-  IS_QUEUE_OPEN: 'salon_online_queue_open',
 };
 
+// Memory fallback store
 const memoryStore = {
   [STORAGE_KEYS.QUEUE]: JSON.stringify(SEED_QUEUE),
   [STORAGE_KEYS.BARBERS]: JSON.stringify(DEFAULT_BARBERS),
   [STORAGE_KEYS.SERVICES]: JSON.stringify(DEFAULT_SERVICES),
+  [STORAGE_KEYS.SETTINGS]: JSON.stringify(DEFAULT_SETTINGS),
   [STORAGE_KEYS.ACTIVE_TOKEN]: null,
-  [STORAGE_KEYS.IS_QUEUE_OPEN]: 'true',
 };
 
 function safeGet(key, fallback = null) {
@@ -155,39 +180,201 @@ function safeSet(key, val) {
       if (val === null) {
         localStorage.removeItem(key);
       } else {
-        localStorage.setItem(key, val);
+        localStorage.setItem(key, typeof val === 'string' ? val : JSON.stringify(val));
       }
     } catch (e) {
       // ignore
     }
   }
-  memoryStore[key] = val;
+  memoryStore[key] = typeof val === 'string' ? val : JSON.stringify(val);
 }
 
-// Initialize Storage with Seed Data if Empty
-function initializeStore() {
-  if (typeof window === 'undefined') return;
-  if (!safeGet(STORAGE_KEYS.QUEUE)) {
-    safeSet(STORAGE_KEYS.QUEUE, JSON.stringify(SEED_QUEUE));
-  }
-  if (!safeGet(STORAGE_KEYS.BARBERS)) {
-    safeSet(STORAGE_KEYS.BARBERS, JSON.stringify(DEFAULT_BARBERS));
-  }
-  if (!safeGet(STORAGE_KEYS.SERVICES)) {
-    safeSet(STORAGE_KEYS.SERVICES, JSON.stringify(DEFAULT_SERVICES));
-  }
-  if (safeGet(STORAGE_KEYS.IS_QUEUE_OPEN) === null) {
-    safeSet(STORAGE_KEYS.IS_QUEUE_OPEN, 'true');
-  }
-}
-
-initializeStore();
-
+// Global Event Dispatcher
 export function notifyChange() {
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new Event('salon_queue_update'));
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Supabase Data Transformer Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+function mapSupabaseQueueEntry(row) {
+  return {
+    id: row.id,
+    token: row.token,
+    name: row.name,
+    phone: row.phone,
+    services: Array.isArray(row.service_ids) ? row.service_ids : JSON.parse(row.service_ids || '[]'),
+    barberId: row.preferred_barber_id,
+    assignedBarberId: row.assigned_barber_id,
+    status: row.status,
+    createdAt: row.created_at,
+    calledAt: row.called_at,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+  };
+}
+
+function mapSupabaseBarber(row) {
+  return {
+    id: row.id,
+    name: row.name_en,
+    nameGu: row.name_gu,
+    chair: row.chair,
+    status: row.status,
+    onDuty: row.on_duty,
+    photo: row.photo,
+    currentCustomer: row.current_customer_token,
+  };
+}
+
+function mapSupabaseService(row) {
+  return {
+    id: row.id,
+    nameEn: row.name_en,
+    nameGu: row.name_gu,
+    duration: Number(row.duration),
+    price: Number(row.price),
+    active: row.active,
+  };
+}
+
+function mapSupabaseSettings(row) {
+  return {
+    id: row.id,
+    onlineQueueOpen: row.online_queue_open,
+    closingTime: row.closing_time,
+    cutoffMinutes: row.cutoff_minutes || 30,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Realtime Subscription Setup (< 5s Sync Across Devices)
+// ─────────────────────────────────────────────────────────────────────────────
+
+let isRealtimeInitialized = false;
+
+export function initRealtimeSubscription() {
+  if (isRealtimeInitialized || !isSupabaseConfigured || !supabase || typeof window === 'undefined') {
+    return;
+  }
+  isRealtimeInitialized = true;
+
+  // Initial Sync from Supabase
+  syncFromSupabase();
+
+  // Listen to Postgres changes on all 4 tables
+  const channel = supabase
+    .channel('salon-realtime-sync')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'queue_entries' }, () => {
+      syncQueueFromSupabase();
+    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'barbers' }, () => {
+      syncBarbersFromSupabase();
+    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'services' }, () => {
+      syncServicesFromSupabase();
+    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'salon_settings' }, () => {
+      syncSettingsFromSupabase();
+    })
+    .subscribe();
+
+  return channel;
+}
+
+async function syncQueueFromSupabase() {
+  if (!supabase) return;
+  try {
+    const { data, error } = await supabase
+      .from('queue_entries')
+      .select('*')
+      .order('created_at', { ascending: true });
+
+    if (!error && data) {
+      const mapped = data.map(mapSupabaseQueueEntry);
+      safeSet(STORAGE_KEYS.QUEUE, mapped);
+      notifyChange();
+    }
+  } catch (e) {
+    console.warn('Realtime queue sync error:', e);
+  }
+}
+
+async function syncBarbersFromSupabase() {
+  if (!supabase) return;
+  try {
+    const { data, error } = await supabase
+      .from('barbers')
+      .select('*')
+      .order('chair', { ascending: true });
+
+    if (!error && data) {
+      const mapped = data.map(mapSupabaseBarber);
+      safeSet(STORAGE_KEYS.BARBERS, mapped);
+      notifyChange();
+    }
+  } catch (e) {
+    console.warn('Realtime barbers sync error:', e);
+  }
+}
+
+async function syncServicesFromSupabase() {
+  if (!supabase) return;
+  try {
+    const { data, error } = await supabase
+      .from('services')
+      .select('*')
+      .order('price', { ascending: true });
+
+    if (!error && data) {
+      const mapped = data.map(mapSupabaseService);
+      safeSet(STORAGE_KEYS.SERVICES, mapped);
+      notifyChange();
+    }
+  } catch (e) {
+    console.warn('Realtime services sync error:', e);
+  }
+}
+
+async function syncSettingsFromSupabase() {
+  if (!supabase) return;
+  try {
+    const { data, error } = await supabase
+      .from('salon_settings')
+      .select('*')
+      .eq('id', 'default')
+      .maybeSingle();
+
+    if (!error && data) {
+      const mapped = mapSupabaseSettings(data);
+      safeSet(STORAGE_KEYS.SETTINGS, mapped);
+      notifyChange();
+    }
+  } catch (e) {
+    console.warn('Realtime settings sync error:', e);
+  }
+}
+
+export async function syncFromSupabase() {
+  await Promise.allSettled([
+    syncServicesFromSupabase(),
+    syncBarbersFromSupabase(),
+    syncQueueFromSupabase(),
+    syncSettingsFromSupabase(),
+  ]);
+}
+
+// Auto-start realtime on module import in browser
+if (typeof window !== 'undefined') {
+  initRealtimeSubscription();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Synchronous Getters (Instant UI render with cached/realtime data)
+// ─────────────────────────────────────────────────────────────────────────────
 
 export function getServices() {
   try {
@@ -226,11 +413,12 @@ export function setQueue(queue) {
   notifyChange();
 }
 
-export function isOnlineQueueOpen() {
+export function getSalonSettings() {
   try {
-    return safeGet(STORAGE_KEYS.IS_QUEUE_OPEN) !== 'false';
+    const raw = safeGet(STORAGE_KEYS.SETTINGS);
+    return raw ? JSON.parse(raw) : DEFAULT_SETTINGS;
   } catch (e) {
-    return true;
+    return DEFAULT_SETTINGS;
   }
 }
 
@@ -243,9 +431,22 @@ export function setActiveUserTokenId(tokenId) {
   notifyChange();
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// BUSINESS RULES IMPLEMENTATION (docs/03-flows-rules.md)
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
- * Phone number validation rule:
- * Exactly 10 numerical digits. Standard Indian mobile prefix (starts with 6-9).
+ * 1. State Machine Transition Guard
+ * Verifies if status move is unidirectional and permitted.
+ */
+export function isValidTransition(fromStatus, toStatus) {
+  if (!VALID_TRANSITIONS[fromStatus]) return false;
+  return VALID_TRANSITIONS[fromStatus].includes(toStatus);
+}
+
+/**
+ * 2. Phone Validation Rule
+ * Strictly 10 numerical digits starting with 6, 7, 8, or 9.
  */
 export function validatePhone(phone) {
   if (!phone) return false;
@@ -254,7 +455,8 @@ export function validatePhone(phone) {
 }
 
 /**
- * Find an active customer spot by phone number (waiting, called, or in chair).
+ * 3. Single Active Spot per Phone Rule
+ * Checks if a customer with this phone number is currently active ('Waiting', 'Called', 'In chair').
  */
 export function findActiveSpotByPhone(phone) {
   if (!phone) return null;
@@ -268,323 +470,41 @@ export function findActiveSpotByPhone(phone) {
 }
 
 /**
- * Cancel a customer's queue spot:
- * - Transitions status to 'Cancelled'
- * - Clears user active token if it matches
- * - Updates queue in localStorage and notifies all screens
+ * 4. Online Queue Cutoff Rule (30 Minutes Before Closing)
+ * Checks if online queue is enabled and if current time is before the 30-min closing cutoff.
+ * Walk-ins are still permitted even after online cutoff.
  */
-export function cancelSpot(tokenIdOrId) {
-  if (!tokenIdOrId) return false;
-  const queue = getQueue();
-  let updated = false;
-
-  const nextQueue = queue.map((item) => {
-    if ((item.token === tokenIdOrId || item.id === tokenIdOrId) && ['Waiting', 'Called'].includes(item.status)) {
-      updated = true;
-      return {
-        ...item,
-        status: 'Cancelled',
-        cancelledAt: new Date().toISOString(),
-      };
-    }
-    return item;
-  });
-
-  if (updated) {
-    setQueue(nextQueue);
-    // If the cancelled token belongs to the active user, clear their active spot
-    const activeToken = getActiveUserTokenId();
-    if (activeToken === tokenIdOrId || queue.find(q => q.id === tokenIdOrId)?.token === activeToken) {
-      setActiveUserTokenId(null);
-    }
-
-    // Also check if any barber was calling this customer and free the chair
-    const barbers = getBarbers();
-    const updatedBarbers = barbers.map((b) => {
-      if (b.currentCustomer === tokenIdOrId || queue.find(q => q.id === tokenIdOrId)?.token === b.currentCustomer) {
-        return {
-          ...b,
-          status: 'free',
-          currentCustomer: null,
-        };
-      }
-      return b;
-    });
-    setBarbers(updatedBarbers);
-    return true;
+export function isOnlineJoiningAllowed() {
+  const settings = getSalonSettings();
+  if (!settings.onlineQueueOpen) {
+    return { allowed: false, reason: 'closed_by_owner' };
   }
-  return false;
+
+  // Parse closing time (e.g., '21:00:00' -> 9:00 PM)
+  const now = new Date();
+  const [closingHour, closingMinute] = (settings.closingTime || '21:00:00').split(':').map(Number);
+  
+  const closingDate = new Date();
+  closingDate.setHours(closingHour, closingMinute, 0, 0);
+
+  const cutoffMinutes = settings.cutoffMinutes || 30;
+  const cutoffDate = new Date(closingDate.getTime() - cutoffMinutes * 60000);
+
+  if (now >= cutoffDate) {
+    return { allowed: false, reason: 'cutoff_reached' };
+  }
+
+  return { allowed: true };
+}
+
+// Backward-compatible alias
+export function isOnlineQueueOpen() {
+  return isOnlineJoiningAllowed().allowed;
 }
 
 /**
- * Get detailed customer state for `/status/:id`
- */
-export function getCustomerQueueDetails(tokenIdOrId) {
-  const queue = getQueue();
-  const services = getServices();
-  const barbers = getBarbers();
-
-  const customer = queue.find(
-    (item) => item.token === tokenIdOrId || item.id === tokenIdOrId
-  );
-
-  if (!customer) {
-    return null;
-  }
-
-  // Calculate position among waiting customers
-  const waitingCustomers = queue.filter((c) => c.status === 'Waiting');
-  const indexInWaiting = waitingCustomers.findIndex((c) => c.id === customer.id);
-  const position = indexInWaiting !== -1 ? indexInWaiting + 1 : 0;
-
-  // Active barbers on duty
-  const activeBarbers = barbers.filter((b) => b.onDuty && b.status !== 'on_break');
-  const barberDivisor = Math.max(activeBarbers.length, 1);
-
-  // Calculate wait time: duration of services ahead of this customer
-  let minutesAhead = 0;
-  if (customer.status === 'Waiting') {
-    const customersAhead = indexInWaiting > 0 ? waitingCustomers.slice(0, indexInWaiting) : [];
-    minutesAhead = customersAhead.reduce((total, c) => {
-      const cDuration = c.services.reduce((sum, sId) => {
-        const s = services.find((srv) => srv.id === sId);
-        return sum + (s ? s.duration : 25);
-      }, 0);
-      return total + cDuration;
-    }, 0);
-  }
-
-  const estimatedWaitMins = customer.status === 'Waiting'
-    ? Math.max(Math.round(minutesAhead / barberDivisor), 5)
-    : 0;
-
-  // Resolve service objects
-  const customerServices = customer.services.map((sId) => {
-    return services.find((s) => s.id === sId) || { id: sId, nameEn: sId, nameGu: sId, duration: 25, price: 100 };
-  });
-
-  // Resolve barber info
-  const preferredBarber = barbers.find((b) => b.id === customer.barberId) || null;
-  const assignedBarber = barbers.find((b) => b.id === customer.assignedBarberId) || preferredBarber;
-
-  return {
-    customer,
-    position,
-    estimatedWaitMins,
-    customerServices,
-    preferredBarber,
-    assignedBarber,
-    status: customer.status,
-  };
-}
-
-/**
- * Call Next Customer for a specific barber:
- * - Picks earliest customer where status == 'Waiting' and (barberId == barberId or barberId == 'any')
- * - Customer status transitions: 'Waiting' -> 'Called'
- * - Barber status transitions to 'busy' with currentCustomer = customer.token
- */
-export function callNextCustomer(barberId) {
-  const queue = getQueue();
-  const barbers = getBarbers();
-
-  const barber = barbers.find((b) => b.id === barberId);
-  if (!barber || !barber.onDuty || barber.status === 'on_break') {
-    return null;
-  }
-
-  // Find the earliest waiting customer who chose this barber or 'any' (First-Come, First-Served)
-  const eligibleCustomer = queue.find(
-    (item) => item.status === 'Waiting' && (item.barberId === barberId || item.barberId === 'any')
-  );
-
-  if (!eligibleCustomer) {
-    return null;
-  }
-
-  // Update customer status to 'Called' and attach assignedBarberId
-  const updatedQueue = queue.map((item) => {
-    if (item.id === eligibleCustomer.id) {
-      return {
-        ...item,
-        status: 'Called',
-        assignedBarberId: barberId,
-        calledAt: new Date().toISOString(),
-      };
-    }
-    return item;
-  });
-
-  // Update barber state
-  const updatedBarbers = barbers.map((b) => {
-    if (b.id === barberId) {
-      return {
-        ...b,
-        status: 'busy',
-        currentCustomer: eligibleCustomer.token,
-      };
-    }
-    return b;
-  });
-
-  setQueue(updatedQueue);
-  setBarbers(updatedBarbers);
-
-  return eligibleCustomer;
-}
-
-/**
- * Start service: Transitions customer from 'Called' to 'In chair'
- */
-export function startService(barberId) {
-  const queue = getQueue();
-  const barbers = getBarbers();
-  const barber = barbers.find((b) => b.id === barberId);
-
-  if (!barber || !barber.currentCustomer) return false;
-
-  const currentToken = barber.currentCustomer;
-  const updatedQueue = queue.map((item) => {
-    if (item.token === currentToken && item.status === 'Called') {
-      return {
-        ...item,
-        status: 'In chair',
-        startedAt: new Date().toISOString(),
-      };
-    }
-    return item;
-  });
-
-  setQueue(updatedQueue);
-  return true;
-}
-
-/**
- * Complete Service (Done):
- * 1. Transitions active customer from 'In chair' or 'Called' to 'Done'.
- * 2. Frees up the barber chair.
- * 3. If autoCallNext is true (default), automatically calls the next customer in queue!
- */
-export function completeService(barberId, autoCallNext = true) {
-  const queue = getQueue();
-  const barbers = getBarbers();
-  const barber = barbers.find((b) => b.id === barberId);
-
-  if (!barber) return false;
-
-  let completedToken = barber.currentCustomer;
-  let updatedQueue = [...queue];
-
-  // If barber had a customer in chair or called, mark them as 'Done'
-  if (completedToken) {
-    updatedQueue = updatedQueue.map((item) => {
-      if (item.token === completedToken && ['Called', 'In chair'].includes(item.status)) {
-        return {
-          ...item,
-          status: 'Done',
-          completedAt: new Date().toISOString(),
-        };
-      }
-      return item;
-    });
-  }
-
-  // Check if there is an eligible next customer in line
-  let nextCustomer = null;
-  if (autoCallNext && barber.onDuty && barber.status !== 'on_break') {
-    nextCustomer = updatedQueue.find(
-      (item) => item.status === 'Waiting' && (item.barberId === barberId || item.barberId === 'any')
-    );
-  }
-
-  if (nextCustomer) {
-    // Advance next customer directly to 'Called'
-    updatedQueue = updatedQueue.map((item) => {
-      if (item.id === nextCustomer.id) {
-        return {
-          ...item,
-          status: 'Called',
-          assignedBarberId: barberId,
-          calledAt: new Date().toISOString(),
-        };
-      }
-      return item;
-    });
-  }
-
-  // Update barber state
-  const updatedBarbers = barbers.map((b) => {
-    if (b.id === barberId) {
-      return {
-        ...b,
-        status: nextCustomer ? 'busy' : 'free',
-        currentCustomer: nextCustomer ? nextCustomer.token : null,
-      };
-    }
-    return b;
-  });
-
-  setQueue(updatedQueue);
-  setBarbers(updatedBarbers);
-
-  return {
-    completedToken,
-    nextCustomerToken: nextCustomer ? nextCustomer.token : null,
-  };
-}
-
-/**
- * Toggle Barber Break
- */
-export function toggleBarberBreak(barberId) {
-  const barbers = getBarbers();
-  const updated = barbers.map((b) => {
-    if (b.id === barberId) {
-      const nextStatus = b.status === 'on_break' ? 'free' : 'on_break';
-      return {
-        ...b,
-        status: nextStatus,
-        currentCustomer: nextStatus === 'on_break' ? null : b.currentCustomer,
-      };
-    }
-    return b;
-  });
-  setBarbers(updated);
-}
-
-/**
- * Calculate queue metrics for the Home Screen:
- * - Active waiting people count (status === 'Waiting')
- * - Total estimated wait time for the next person joining
- */
-export function getHomeQueueMetrics() {
-  const queue = getQueue();
-  const waitingCustomers = queue.filter((c) => c.status === 'Waiting');
-  const barbers = getBarbers();
-  const services = getServices();
-
-  const activeBarbers = barbers.filter((b) => b.onDuty && b.status !== 'on_break');
-  const barberDivisor = Math.max(activeBarbers.length, 1);
-
-  // Sum duration of all services for waiting customers
-  const totalWaitingMinutes = waitingCustomers.reduce((total, customer) => {
-    const customerServiceMins = customer.services.reduce((srvTotal, srvId) => {
-      const srv = services.find((s) => s.id === srvId);
-      return srvTotal + (srv ? srv.duration : 25);
-    }, 0);
-    return total + customerServiceMins;
-  }, 0);
-
-  const estimatedWait = Math.round(totalWaitingMinutes / barberDivisor);
-
-  return {
-    waitingCount: waitingCustomers.length,
-    estimatedWaitMinutes: estimatedWait > 0 ? estimatedWait : 0,
-  };
-}
-
-/**
- * Calculate dynamic wait time for Screen 2 (Join Queue)
+ * 5. Dynamic Waiting-Time Calculation Formula
+ * Total duration of services ahead divided by active on-duty working barbers.
  */
 export function calculateJoinSummary(selectedServiceIds, preferredBarberId) {
   const services = getServices();
@@ -596,11 +516,13 @@ export function calculateJoinSummary(selectedServiceIds, preferredBarberId) {
   const totalPrice = selectedServices.reduce((sum, s) => sum + s.price, 0);
 
   const waitingCustomers = queue.filter((c) => c.status === 'Waiting');
+  // Barbers on duty and not on break
   const activeBarbers = barbers.filter((b) => b.onDuty && b.status !== 'on_break');
 
   let expectedWait = 0;
 
   if (preferredBarberId && preferredBarberId !== 'any') {
+    // Specific barber chosen: wait includes pending customers specifically requesting this barber + 'any' customers
     const barberCustomersAhead = waitingCustomers.filter(
       (c) => c.barberId === preferredBarberId || c.barberId === 'any'
     );
@@ -613,9 +535,11 @@ export function calculateJoinSummary(selectedServiceIds, preferredBarberId) {
         }, 0)
       );
     }, 0);
+
     const isBarberBusy = barbers.find((b) => b.id === preferredBarberId)?.status === 'busy';
     expectedWait = Math.round(pendingMinutes + (isBarberBusy ? 15 : 0));
   } else {
+    // 'Any' barber: total waiting minutes divided by active barbers
     const totalMinutes = waitingCustomers.reduce((sum, c) => {
       return (
         sum +
@@ -637,9 +561,98 @@ export function calculateJoinSummary(selectedServiceIds, preferredBarberId) {
 }
 
 /**
- * Join Queue action (First-Come, First-Served)
+ * 6. Metrics for Home Screen
  */
-export function joinQueue({ name, phone, serviceIds, barberId }) {
+export function getHomeQueueMetrics() {
+  const queue = getQueue();
+  const waitingCustomers = queue.filter((c) => c.status === 'Waiting');
+  const barbers = getBarbers();
+  const services = getServices();
+
+  const activeBarbers = barbers.filter((b) => b.onDuty && b.status !== 'on_break');
+  const barberDivisor = Math.max(activeBarbers.length, 1);
+
+  const totalWaitingMinutes = waitingCustomers.reduce((total, customer) => {
+    const customerServiceMins = customer.services.reduce((srvTotal, srvId) => {
+      const srv = services.find((s) => s.id === srvId);
+      return srvTotal + (srv ? srv.duration : 25);
+    }, 0);
+    return total + customerServiceMins;
+  }, 0);
+
+  const estimatedWait = Math.round(totalWaitingMinutes / barberDivisor);
+
+  return {
+    waitingCount: waitingCustomers.length,
+    estimatedWaitMinutes: estimatedWait > 0 ? estimatedWait : 0,
+  };
+}
+
+/**
+ * 7. Customer Queue Details for `/status/:id`
+ */
+export function getCustomerQueueDetails(tokenIdOrId) {
+  const queue = getQueue();
+  const services = getServices();
+  const barbers = getBarbers();
+
+  const customer = queue.find(
+    (item) => item.token === tokenIdOrId || item.id === tokenIdOrId
+  );
+
+  if (!customer) {
+    return null;
+  }
+
+  const waitingCustomers = queue.filter((c) => c.status === 'Waiting');
+  const indexInWaiting = waitingCustomers.findIndex((c) => c.id === customer.id);
+  const position = indexInWaiting !== -1 ? indexInWaiting + 1 : 0;
+
+  const activeBarbers = barbers.filter((b) => b.onDuty && b.status !== 'on_break');
+  const barberDivisor = Math.max(activeBarbers.length, 1);
+
+  let minutesAhead = 0;
+  if (customer.status === 'Waiting') {
+    const customersAhead = indexInWaiting > 0 ? waitingCustomers.slice(0, indexInWaiting) : [];
+    minutesAhead = customersAhead.reduce((total, c) => {
+      const cDuration = c.services.reduce((sum, sId) => {
+        const s = services.find((srv) => srv.id === sId);
+        return sum + (s ? s.duration : 25);
+      }, 0);
+      return total + cDuration;
+    }, 0);
+  }
+
+  const estimatedWaitMins = customer.status === 'Waiting'
+    ? Math.max(Math.round(minutesAhead / barberDivisor), 5)
+    : 0;
+
+  const customerServices = customer.services.map((sId) => {
+    return services.find((s) => s.id === sId) || { id: sId, nameEn: sId, nameGu: sId, duration: 25, price: 100 };
+  });
+
+  const preferredBarber = barbers.find((b) => b.id === customer.barberId) || null;
+  const assignedBarber = barbers.find((b) => b.id === customer.assignedBarberId) || preferredBarber;
+
+  return {
+    customer,
+    position,
+    estimatedWaitMins,
+    customerServices,
+    preferredBarber,
+    assignedBarber,
+    status: customer.status,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STATE MACHINE MUTATION ACTIONS (FCFS, Single Occupancy, Realtime Broadcast)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Join Queue Action (FCFS, Max 3 Services, Single Active Spot Guard)
+ */
+export async function joinQueue({ name, phone, serviceIds, barberId, isWalkIn = false }) {
   if (!name || !name.trim()) {
     throw new Error('Name is required');
   }
@@ -651,6 +664,16 @@ export function joinQueue({ name, phone, serviceIds, barberId }) {
   }
   if (serviceIds.length > 3) {
     throw new Error('Maximum of 3 services permitted');
+  }
+
+  // Check online cutoff if remote customer
+  if (!isWalkIn) {
+    const check = isOnlineJoiningAllowed();
+    if (!check.allowed) {
+      throw new Error(check.reason === 'cutoff_reached' 
+        ? 'Online queue closed 30 mins before salon closing. Walk-ins still welcome at desk.' 
+        : 'Online joining is currently closed by the salon.');
+    }
   }
 
   const cleanedPhone = phone.trim().replace(/\D/g, '');
@@ -672,6 +695,7 @@ export function joinQueue({ name, phone, serviceIds, barberId }) {
   const nextTokenNum = maxTokenNum + 1;
   const newToken = `S-${nextTokenNum}`;
   const newId = `q-${Date.now()}`;
+  const nowIso = new Date().toISOString();
 
   const newEntry = {
     id: newId,
@@ -682,12 +706,420 @@ export function joinQueue({ name, phone, serviceIds, barberId }) {
     barberId: barberId || 'any',
     assignedBarberId: null,
     status: 'Waiting',
-    createdAt: new Date().toISOString(),
+    createdAt: nowIso,
   };
 
+  // Immediate optimistic local update
   const updatedQueue = [...queue, newEntry];
   setQueue(updatedQueue);
   setActiveUserTokenId(newToken);
 
+  // Sync to Supabase in background
+  if (supabase) {
+    try {
+      await supabase.from('queue_entries').insert({
+        token: newToken,
+        name: name.trim(),
+        phone: cleanedPhone,
+        service_ids: serviceIds,
+        preferred_barber_id: barberId || 'any',
+        assigned_barber_id: null,
+        status: 'Waiting',
+        created_at: nowIso,
+      });
+    } catch (err) {
+      console.warn('Supabase join insert error:', err);
+    }
+  }
+
   return newEntry;
+}
+
+/**
+ * Cancel Spot Action:
+ * Status transition: 'Waiting' -> 'Cancelled'
+ */
+export async function cancelSpot(tokenIdOrId) {
+  if (!tokenIdOrId) return false;
+  const queue = getQueue();
+  const customer = queue.find(c => c.token === tokenIdOrId || c.id === tokenIdOrId);
+
+  if (!customer || !isValidTransition(customer.status, 'Cancelled')) {
+    return false;
+  }
+
+  const nowIso = new Date().toISOString();
+  const nextQueue = queue.map((item) => {
+    if (item.id === customer.id) {
+      return {
+        ...item,
+        status: 'Cancelled',
+        cancelledAt: nowIso,
+      };
+    }
+    return item;
+  });
+
+  setQueue(nextQueue);
+
+  // Clear active token if it belongs to current browser
+  const activeToken = getActiveUserTokenId();
+  if (activeToken === customer.token || activeToken === customer.id) {
+    setActiveUserTokenId(null);
+  }
+
+  // Free barber chair if customer was called
+  const barbers = getBarbers();
+  const updatedBarbers = barbers.map((b) => {
+    if (b.currentCustomer === customer.token) {
+      return { ...b, status: 'free', currentCustomer: null };
+    }
+    return b;
+  });
+  setBarbers(updatedBarbers);
+
+  // Sync to Supabase
+  if (supabase) {
+    try {
+      await supabase
+        .from('queue_entries')
+        .update({ status: 'Cancelled', cancelled_at: nowIso })
+        .eq('token', customer.token);
+
+      await supabase
+        .from('barbers')
+        .update({ status: 'free', current_customer_token: null })
+        .eq('current_customer_token', customer.token);
+    } catch (err) {
+      console.warn('Supabase cancel update error:', err);
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Call Next Customer Action:
+ * - Selects earliest waiting customer preferring this barber OR 'any' (FCFS)
+ * - Transitions: 'Waiting' -> 'Called'
+ * - Single occupancy enforced: Chair must be free
+ */
+export async function callNextCustomer(barberId) {
+  const queue = getQueue();
+  const barbers = getBarbers();
+
+  const barber = barbers.find((b) => b.id === barberId);
+  if (!barber || !barber.onDuty || barber.status === 'on_break') {
+    return null;
+  }
+
+  // Invariant: One customer in chair/called at a time
+  if (barber.currentCustomer) {
+    const existing = queue.find(q => q.token === barber.currentCustomer && ['Called', 'In chair'].includes(q.status));
+    if (existing) {
+      throw new Error(`Chair is currently occupied by ${existing.token}`);
+    }
+  }
+
+  // First-Come, First-Served Matching: Earliest created_at where preference matches
+  const eligibleCustomer = queue.find(
+    (item) => item.status === 'Waiting' && (item.barberId === barberId || item.barberId === 'any')
+  );
+
+  if (!eligibleCustomer) {
+    return null;
+  }
+
+  const nowIso = new Date().toISOString();
+
+  // Update customer status to 'Called'
+  const updatedQueue = queue.map((item) => {
+    if (item.id === eligibleCustomer.id) {
+      return {
+        ...item,
+        status: 'Called',
+        assignedBarberId: barberId,
+        calledAt: nowIso,
+      };
+    }
+    return item;
+  });
+
+  // Update barber to busy
+  const updatedBarbers = barbers.map((b) => {
+    if (b.id === barberId) {
+      return {
+        ...b,
+        status: 'busy',
+        currentCustomer: eligibleCustomer.token,
+      };
+    }
+    return b;
+  });
+
+  setQueue(updatedQueue);
+  setBarbers(updatedBarbers);
+
+  // Sync to Supabase
+  if (supabase) {
+    try {
+      await supabase
+        .from('queue_entries')
+        .update({ status: 'Called', assigned_barber_id: barberId, called_at: nowIso })
+        .eq('token', eligibleCustomer.token);
+
+      await supabase
+        .from('barbers')
+        .update({ status: 'busy', current_customer_token: eligibleCustomer.token })
+        .eq('id', barberId);
+    } catch (err) {
+      console.warn('Supabase callNext sync error:', err);
+    }
+  }
+
+  return eligibleCustomer;
+}
+
+/**
+ * Start Service Action:
+ * Transitions: 'Called' -> 'In chair'
+ */
+export async function startService(barberId) {
+  const queue = getQueue();
+  const barbers = getBarbers();
+  const barber = barbers.find((b) => b.id === barberId);
+
+  if (!barber || !barber.currentCustomer) return false;
+
+  const currentToken = barber.currentCustomer;
+  const customer = queue.find(item => item.token === currentToken);
+
+  if (!customer || !isValidTransition(customer.status, 'In chair')) {
+    return false;
+  }
+
+  const nowIso = new Date().toISOString();
+  const updatedQueue = queue.map((item) => {
+    if (item.token === currentToken && item.status === 'Called') {
+      return {
+        ...item,
+        status: 'In chair',
+        startedAt: nowIso,
+      };
+    }
+    return item;
+  });
+
+  setQueue(updatedQueue);
+
+  if (supabase) {
+    try {
+      await supabase
+        .from('queue_entries')
+        .update({ status: 'In chair', started_at: nowIso })
+        .eq('token', currentToken);
+    } catch (err) {
+      console.warn('Supabase startService sync error:', err);
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Complete Service Action:
+ * 1. Transitions: 'In chair' | 'Called' -> 'Done'
+ * 2. Frees the chair
+ * 3. Auto-advances the next eligible customer (if autoCallNext is true)
+ */
+export async function completeService(barberId, autoCallNext = true) {
+  const queue = getQueue();
+  const barbers = getBarbers();
+  const barber = barbers.find((b) => b.id === barberId);
+
+  if (!barber) return false;
+
+  const completedToken = barber.currentCustomer;
+  const nowIso = new Date().toISOString();
+  let updatedQueue = [...queue];
+
+  // Mark current customer as 'Done'
+  if (completedToken) {
+    updatedQueue = updatedQueue.map((item) => {
+      if (item.token === completedToken && ['Called', 'In chair'].includes(item.status)) {
+        return {
+          ...item,
+          status: 'Done',
+          completedAt: nowIso,
+        };
+      }
+      return item;
+    });
+
+    if (supabase) {
+      try {
+        await supabase
+          .from('queue_entries')
+          .update({ status: 'Done', completed_at: nowIso })
+          .eq('token', completedToken);
+      } catch (err) {
+        console.warn('Supabase completeService sync error:', err);
+      }
+    }
+  }
+
+  // Find next customer in line
+  let nextCustomer = null;
+  if (autoCallNext && barber.onDuty && barber.status !== 'on_break') {
+    nextCustomer = updatedQueue.find(
+      (item) => item.status === 'Waiting' && (item.barberId === barberId || item.barberId === 'any')
+    );
+  }
+
+  if (nextCustomer) {
+    updatedQueue = updatedQueue.map((item) => {
+      if (item.id === nextCustomer.id) {
+        return {
+          ...item,
+          status: 'Called',
+          assignedBarberId: barberId,
+          calledAt: nowIso,
+        };
+      }
+      return item;
+    });
+
+    if (supabase) {
+      try {
+        await supabase
+          .from('queue_entries')
+          .update({ status: 'Called', assigned_barber_id: barberId, called_at: nowIso })
+          .eq('token', nextCustomer.token);
+      } catch (err) {
+        console.warn('Supabase next customer call error:', err);
+      }
+    }
+  }
+
+  // Update barber chair status
+  const updatedBarbers = barbers.map((b) => {
+    if (b.id === barberId) {
+      return {
+        ...b,
+        status: nextCustomer ? 'busy' : 'free',
+        currentCustomer: nextCustomer ? nextCustomer.token : null,
+      };
+    }
+    return b;
+  });
+
+  setQueue(updatedQueue);
+  setBarbers(updatedBarbers);
+
+  if (supabase) {
+    try {
+      await supabase
+        .from('barbers')
+        .update({
+          status: nextCustomer ? 'busy' : 'free',
+          current_customer_token: nextCustomer ? nextCustomer.token : null,
+        })
+        .eq('id', barberId);
+    } catch (err) {
+      console.warn('Supabase barber update error:', err);
+    }
+  }
+
+  return {
+    completedToken,
+    nextCustomerToken: nextCustomer ? nextCustomer.token : null,
+  };
+}
+
+/**
+ * Mark No-Show Action:
+ * Transitions: 'Called' -> 'No-show'
+ */
+export async function markNoShow(tokenId) {
+  const queue = getQueue();
+  const customer = queue.find(q => q.token === tokenId);
+
+  if (!customer || !isValidTransition(customer.status, 'No-show')) {
+    return false;
+  }
+
+  const nowIso = new Date().toISOString();
+  const nextQueue = queue.map(item => {
+    if (item.token === tokenId) {
+      return { ...item, status: 'No-show', completedAt: nowIso };
+    }
+    return item;
+  });
+
+  // Free up barber chair
+  const barbers = getBarbers();
+  const nextBarbers = barbers.map(b => {
+    if (b.currentCustomer === tokenId) {
+      return { ...b, status: 'free', currentCustomer: null };
+    }
+    return b;
+  });
+
+  setQueue(nextQueue);
+  setBarbers(nextBarbers);
+
+  if (supabase) {
+    try {
+      await supabase
+        .from('queue_entries')
+        .update({ status: 'No-show' })
+        .eq('token', tokenId);
+
+      await supabase
+        .from('barbers')
+        .update({ status: 'free', current_customer_token: null })
+        .eq('current_customer_token', tokenId);
+    } catch (err) {
+      console.warn('Supabase no-show sync error:', err);
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Barber Break Action
+ */
+export async function toggleBarberBreak(barberId) {
+  const barbers = getBarbers();
+  const barber = barbers.find(b => b.id === barberId);
+  if (!barber) return;
+
+  const nextStatus = barber.status === 'on_break' ? 'free' : 'on_break';
+  const updated = barbers.map(b => {
+    if (b.id === barberId) {
+      return {
+        ...b,
+        status: nextStatus,
+        currentCustomer: nextStatus === 'on_break' ? null : b.currentCustomer,
+      };
+    }
+    return b;
+  });
+
+  setBarbers(updated);
+
+  if (supabase) {
+    try {
+      await supabase
+        .from('barbers')
+        .update({
+          status: nextStatus,
+          current_customer_token: nextStatus === 'on_break' ? null : barber.currentCustomer,
+        })
+        .eq('id', barberId);
+    } catch (err) {
+      console.warn('Supabase toggleBarberBreak error:', err);
+    }
+  }
 }
