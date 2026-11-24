@@ -67,9 +67,13 @@ export default function HomePage() {
     <div className="max-w-md mx-auto px-4 py-6 sm:py-10 space-y-5">
       {/* 1. Salon Operational Badge */}
       <div className="flex justify-center">
-        <div className="inline-flex items-center space-x-2 px-3.5 py-1.5 rounded-full text-xs font-semibold bg-emerald-950/70 text-emerald-400 border border-emerald-800/60 shadow-sm">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-          <span>{t('home.statusBadge')}</span>
+        <div className={`inline-flex items-center space-x-2 px-3.5 py-1.5 rounded-full text-xs font-semibold shadow-sm ${
+          isOpen
+            ? 'bg-emerald-950/70 text-emerald-400 border border-emerald-800/60'
+            : 'bg-red-950/70 text-red-400 border border-red-800/60'
+        }`}>
+          <span className={`w-2 h-2 rounded-full ${isOpen ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'}`}></span>
+          <span>{isOpen ? t('home.statusBadge') : (lang === 'gu' ? 'ઓનલાઇન કતાર બંધ છે' : 'Online Queue Closed')}</span>
         </div>
       </div>
 

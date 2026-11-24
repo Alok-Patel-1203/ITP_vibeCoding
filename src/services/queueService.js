@@ -51,8 +51,10 @@ export const DEFAULT_BARBERS = [
 export const DEFAULT_SETTINGS = {
   id: 'default',
   onlineQueueOpen: true,
-  closingTime: '21:00:00',
+  closingTime: '23:00:00',
   cutoffMinutes: 30,
+  manualOverride: true,
+  enforceCutoff: false,
 };
 
 const SEED_QUEUE = [
@@ -244,9 +246,11 @@ function mapSupabaseService(row) {
 function mapSupabaseSettings(row) {
   return {
     id: row.id,
-    onlineQueueOpen: row.online_queue_open,
-    closingTime: row.closing_time,
+    onlineQueueOpen: Boolean(row.online_queue_open),
+    closingTime: row.closing_time || '23:00:00',
     cutoffMinutes: row.cutoff_minutes || 30,
+    manualOverride: Boolean(row.online_queue_open), // When open in Supabase, treat as manually allowed by owner
+    enforceCutoff: false,
   };
 }
 
@@ -422,6 +426,100 @@ export function getSalonSettings() {
   }
 }
 
+export async function setSalonSettings(updatedSettings) {
+  const current = getSalonSettings();
+  const merged = { ...current, ...updatedSettings };
+  safeSet(STORAGE_KEYS.SETTINGS, JSON.stringify(merged));
+  notifyChange();
+
+  if (supabase) {
+    try {
+      const payload = {
+        updated_at: new Date().toISOString(),
+      };
+      if (updatedSettings.onlineQueueOpen !== undefined) {
+        payload.online_queue_open = Boolean(updatedSettings.onlineQueueOpen);
+      }
+      if (updatedSettings.closingTime !== undefined) {
+        payload.closing_time = updatedSettings.closingTime;
+      }
+      if (updatedSettings.cutoffMinutes !== undefined) {
+        payload.cutoff_minutes = Number(updatedSettings.cutoffMinutes);
+      }
+
+      await supabase
+        .from('salon_settings')
+        .update(payload)
+        .eq('id', 'default');
+    } catch (err) {
+      console.warn('Supabase update salon_settings error:', err);
+    }
+  }
+
+  return merged;
+}
+
+export async function toggleOnlineQueue(forceState = null) {
+  const current = getSalonSettings();
+  const nextOpenState = forceState !== null ? forceState : !current.onlineQueueOpen;
+  
+  return await setSalonSettings({
+    onlineQueueOpen: nextOpenState,
+    manualOverride: nextOpenState, // If opened manually by owner, allow it regardless of 9 PM cutoff
+  });
+}
+
+export async function toggleBarberDuty(barberId) {
+  const barbers = getBarbers();
+  let updatedStatus = false;
+  const updated = barbers.map((b) => {
+    if (b.id === barberId) {
+      updatedStatus = !b.onDuty;
+      return { ...b, onDuty: updatedStatus };
+    }
+    return b;
+  });
+  setBarbers(updated);
+
+  if (supabase) {
+    try {
+      await supabase
+        .from('barbers')
+        .update({ on_duty: updatedStatus })
+        .eq('id', barberId);
+    } catch (err) {
+      console.warn('Supabase barber duty update error:', err);
+    }
+  }
+  return updated;
+}
+
+export async function toggleServiceActive(serviceId) {
+  const services = getServices();
+  let updatedActive = false;
+  const updated = services.map((s) => {
+    if (s.id === serviceId) {
+      updatedActive = !s.active;
+      return { ...s, active: updatedActive };
+    }
+    return s;
+  });
+  safeSet(STORAGE_KEYS.SERVICES, JSON.stringify(updated));
+  notifyChange();
+
+  if (supabase) {
+    try {
+      await supabase
+        .from('services')
+        .update({ active: updatedActive })
+        .eq('id', serviceId);
+    } catch (err) {
+      console.warn('Supabase service active update error:', err);
+    }
+  }
+  return updated;
+}
+
 export function getActiveUserTokenId() {
   return safeGet(STORAGE_KEYS.ACTIVE_TOKEN);
 }
@@ -471,8 +569,8 @@ export function findActiveSpotByPhone(phone) {
 
 /**
  * 4. Online Queue Cutoff Rule (30 Minutes Before Closing)
- * Checks if online queue is enabled and if current time is before the 30-min closing cutoff.
- * Walk-ins are still permitted even after online cutoff.
+ * Checks if online queue is enabled and if current time is before the closing cutoff.
+ * If owner manually opened the queue, manual control takes precedence.
  */
 export function isOnlineJoiningAllowed() {
   const settings = getSalonSettings();
@@ -480,18 +578,25 @@ export function isOnlineJoiningAllowed() {
     return { allowed: false, reason: 'closed_by_owner' };
   }
 
-  // Parse closing time (e.g., '21:00:00' -> 9:00 PM)
-  const now = new Date();
-  const [closingHour, closingMinute] = (settings.closingTime || '21:00:00').split(':').map(Number);
-  
-  const closingDate = new Date();
-  closingDate.setHours(closingHour, closingMinute, 0, 0);
+  // If the owner has manually opened or overridden the queue, it takes precedence
+  if (settings.manualOverride) {
+    return { allowed: true, reason: 'manual_override' };
+  }
 
-  const cutoffMinutes = settings.cutoffMinutes || 30;
-  const cutoffDate = new Date(closingDate.getTime() - cutoffMinutes * 60000);
+  // Check cutoff only if enforceCutoff is enabled
+  if (settings.enforceCutoff) {
+    const now = new Date();
+    const [closingHour, closingMinute] = (settings.closingTime || '23:00:00').split(':').map(Number);
+    
+    const closingDate = new Date();
+    closingDate.setHours(closingHour, closingMinute, 0, 0);
 
-  if (now >= cutoffDate) {
-    return { allowed: false, reason: 'cutoff_reached' };
+    const cutoffMinutes = settings.cutoffMinutes || 30;
+    const cutoffDate = new Date(closingDate.getTime() - cutoffMinutes * 60000);
+
+    if (now >= cutoffDate) {
+      return { allowed: false, reason: 'cutoff_reached' };
+    }
   }
 
   return { allowed: true };
