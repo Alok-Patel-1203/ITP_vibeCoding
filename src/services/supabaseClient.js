@@ -11,8 +11,16 @@ const getEnvVar = (key) => {
   return '';
 };
 
-const supabaseUrl = getEnvVar('VITE_SUPABASE_URL');
-const supabaseAnonKey = getEnvVar('VITE_SUPABASE_ANON_KEY');
+const supabaseUrl = 
+  getEnvVar('VITE_SUPABASE_URL') || 
+  getEnvVar('SUPABASE_URL');
+
+const supabaseAnonKey = 
+  getEnvVar('VITE_SUPABASE_ANON_KEY') || 
+  getEnvVar('SUPABASE_PUBLISHABLE_KEY') || 
+  getEnvVar('SUPABASE_ANON_KEY') || 
+  getEnvVar('VITE_SUPABASE_KEY') || 
+  getEnvVar('SUPABASE_KEY');
 
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
 
@@ -25,4 +33,12 @@ export const supabase = isSupabaseConfigured
       },
     })
   : null;
+
+if (typeof window !== 'undefined') {
+  if (isSupabaseConfigured) {
+    console.log('[Supabase Realtime] Connected successfully:', supabaseUrl);
+  } else {
+    console.warn('[Supabase Realtime] Environment variables missing. Ensure VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are set.');
+  }
+}
 

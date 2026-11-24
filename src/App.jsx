@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { LanguageProvider } from './context/LanguageContext';
 import Navbar from './components/Navbar';
+import { initRealtimeSubscription } from './services/queueService';
 
 // Page components
 import HomePage from './pages/HomePage';
@@ -13,6 +14,10 @@ import WaitingAreaDisplayPage from './pages/WaitingAreaDisplayPage';
 import OwnerSettingsPage from './pages/OwnerSettingsPage';
 
 export default function App() {
+  useEffect(() => {
+    initRealtimeSubscription();
+  }, []);
+
   return (
     <LanguageProvider>
       <BrowserRouter>
