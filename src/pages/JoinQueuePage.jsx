@@ -73,7 +73,7 @@ export default function JoinQueuePage() {
     if (duplicateSpot) setDuplicateSpot(null);
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setPhoneTouched(true);
     setNameTouched(true);
@@ -91,15 +91,19 @@ export default function JoinQueuePage() {
 
     setIsSubmitting(true);
     try {
-      const entry = joinQueue({
+      const entry = await joinQueue({
         name,
         phone,
         serviceIds: selectedServices,
         barberId: selectedBarber,
       });
 
-      // Route to My Status Screen
-      navigate(`/status/${entry.token}`);
+      // Route to My Status Screen with valid token
+      if (entry && entry.token) {
+        navigate(`/status/${entry.token}`);
+      } else {
+        throw new Error('Could not generate queue token. Please try again.');
+      }
     } catch (err) {
       if (err.message && err.message.startsWith('DUPLICATE_PHONE:')) {
         const token = err.message.split(':')[1];

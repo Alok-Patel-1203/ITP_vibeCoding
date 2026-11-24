@@ -24,8 +24,8 @@ export default function MyStatusPage() {
   const { t, lang } = useLanguage();
   const navigate = useNavigate();
 
-  // If no param, try active token from localStorage, fallback to S-14
-  const targetToken = id || getActiveUserTokenId() || 'S-14';
+  // If no param or invalid 'undefined' string, try active token from localStorage, fallback to S-14
+  const targetToken = (id && id !== 'undefined') ? id : (getActiveUserTokenId() || 'S-14');
 
   const [details, setDetails] = useState(() => getCustomerQueueDetails(targetToken));
   const [showCancelModal, setShowCancelModal] = useState(false);

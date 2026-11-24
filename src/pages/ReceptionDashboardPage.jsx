@@ -64,15 +64,16 @@ export default function ReceptionDashboardPage() {
     cancelSpot(token);
   };
 
-  const handleWalkInSubmit = (e) => {
+  const handleWalkInSubmit = async (e) => {
     e.preventDefault();
     setWalkInError('');
     try {
-      joinQueue({
+      await joinQueue({
         name: walkInName,
         phone: walkInPhone,
         serviceIds: [walkInService],
         barberId: walkInBarber,
+        isWalkIn: true,
       });
       setWalkInName('');
       setWalkInPhone('');
