@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useLanguage } from '../context/LanguageContext';
 import { 
@@ -27,8 +27,24 @@ export default function JoinQueuePage() {
   const { t, lang } = useLanguage();
   const navigate = useNavigate();
 
-  const services = useMemo(() => getServices(), []);
-  const barbers = useMemo(() => getBarbers(), []);
+  const [services, setServices] = useState(() => getServices());
+  const [barbers, setBarbers] = useState(() => getBarbers());
+
+  // Listen to realtime updates for barbers and services
+  useEffect(() => {
+    const handleUpdate = () => {
+      setServices(getServices());
+      setBarbers(getBarbers());
+    };
+
+    window.addEventListener('salon_queue_update', handleUpdate);
+    window.addEventListener('storage', handleUpdate);
+
+    return () => {
+      window.removeEventListener('salon_queue_update', handleUpdate);
+      window.removeEventListener('storage', handleUpdate);
+    };
+  }, []);
 
   // Form State
   const [name, setName] = useState('');
@@ -117,7 +133,7 @@ export default function JoinQueuePage() {
   };
 
   return (
-    <div className="max-w-md mx-auto px-4 py-6 sm:py-10 space-y-6 pb-28">
+    <div className="max-w-md mx-auto px-4 py-6 sm:py-10 space-y-6 pb-48 sm:pb-56">
       {/* Top Header */}
       <div className="flex items-center space-x-3">
         <Link
@@ -353,7 +369,7 @@ export default function JoinQueuePage() {
                     alt={b.name}
                     className="w-10 h-10 rounded-full object-cover border-2 border-charcoal-700 flex-shrink-0"
                   />
-                  <div className="overflow-hidden">
+                  <div className="overflow-hidden min-w-0 flex-1">
                     <span className="text-xs font-bold text-white block truncate">
                       {barberName}
                     </span>
