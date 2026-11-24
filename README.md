@@ -1,5 +1,5 @@
 # Salon Queue Management System
-Live Deployment Link: https://salon-queue-system.vercel.app
+Live Deployment Link: https://202612018-vibe-coding.vercel.app
 
 Real-time Salon Queue Management System eliminating weekend wait-time chaos with live status tracking for customers, barbers, reception, and waiting-area display.
 
