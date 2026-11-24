@@ -308,4 +308,13 @@ in admin panel when i open or close the online queue it is not working after 9Pm
 
 ---
 
+### Prompt 22
+
+```text
+Also in barber view only one baber is seen
+```
+
+---
+
+
 

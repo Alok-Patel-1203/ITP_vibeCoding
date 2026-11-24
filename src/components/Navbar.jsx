@@ -64,7 +64,9 @@ export default function Navbar() {
           {/* Desktop Nav Links */}
           <div className="hidden lg:flex items-center space-x-1">
             {navLinks.map((link) => {
-              const isActive = location.pathname === link.to;
+              const isActive = link.to.startsWith('/barber') 
+                ? location.pathname.startsWith('/barber')
+                : location.pathname === link.to;
               return (
                 <Link
                   key={link.to}
@@ -111,7 +113,9 @@ export default function Navbar() {
             {t('nav.switchView')}
           </div>
           {navLinks.map((link) => {
-            const isActive = location.pathname === link.to;
+            const isActive = link.to.startsWith('/barber') 
+              ? location.pathname.startsWith('/barber')
+              : location.pathname === link.to;
             return (
               <Link
                 key={link.to}

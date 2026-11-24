@@ -29,6 +29,7 @@ export default function App() {
               <Route path="/join" element={<JoinQueuePage />} />
               <Route path="/status/:id" element={<MyStatusPage />} />
               <Route path="/reception" element={<ReceptionDashboardPage />} />
+              <Route path="/barber" element={<Navigate to="/barber/ravi" replace />} />
               <Route path="/barber/:name" element={<BarberViewPage />} />
               <Route path="/display" element={<WaitingAreaDisplayPage />} />
               <Route path="/admin" element={<OwnerSettingsPage />} />

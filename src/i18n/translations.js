@@ -146,6 +146,7 @@ export const translations = {
     barber: {
       title: "Barber Mirror Station",
       workstationFor: "Stylist Station",
+      switchStation: "Select Barber Station",
       statusAvailable: "Available",
       statusOnBreak: "On Break",
       toggleBreakBtn: "Take Break",
@@ -350,6 +351,7 @@ export const translations = {
     barber: {
       title: "વાળંદ મિરર સ્ટેશન",
       workstationFor: "કારીગર સ્ટેશન",
+      switchStation: "વાળંદ સ્ટેશન પસંદ કરો",
       statusAvailable: "સેવા માટે ઉપલબ્ધ",
       statusOnBreak: "બ્રેક પર",
       toggleBreakBtn: "બ્રેક લો",

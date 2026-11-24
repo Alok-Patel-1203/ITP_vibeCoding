@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { useLanguage } from '../context/LanguageContext';
 import { 
   getBarbers, 
@@ -10,11 +10,12 @@ import {
   callNextCustomer, 
   toggleBarberBreak 
 } from '../services/queueService';
-import { Lock, Play, CheckCircle2, Clock, Coffee, Scissors, Users, AlertCircle } from 'lucide-react';
+import { Lock, Play, CheckCircle2, Clock, Coffee, Scissors, Users, AlertCircle, ChevronRight, User } from 'lucide-react';
 
 export default function BarberViewPage() {
   const { name = 'ravi' } = useParams();
   const { t, lang } = useLanguage();
+  const navigate = useNavigate();
 
   const barberId = name.toLowerCase();
 
@@ -23,7 +24,8 @@ export default function BarberViewPage() {
   const [pinError, setPinError] = useState(false);
 
   // Real data state
-  const [barber, setBarber] = useState(() => getBarbers().find(b => b.id === barberId));
+  const [allBarbers, setAllBarbers] = useState(() => getBarbers());
+  const [barber, setBarber] = useState(() => getBarbers().find(b => b.id.toLowerCase() === barberId) || getBarbers()[0]);
   const [queue, setQueue] = useState(() => getQueue());
   const [services, setServices] = useState(() => getServices());
   const [timerSeconds, setTimerSeconds] = useState(0);
@@ -32,11 +34,13 @@ export default function BarberViewPage() {
     const handleSync = () => {
       const freshBarbers = getBarbers();
       const freshQueue = getQueue();
-      setBarber(freshBarbers.find(b => b.id === barberId));
+      setAllBarbers(freshBarbers);
+      setBarber(freshBarbers.find(b => b.id.toLowerCase() === barberId) || freshBarbers[0]);
       setQueue(freshQueue);
       setServices(getServices());
     };
 
+    handleSync();
     window.addEventListener('salon_queue_update', handleSync);
     window.addEventListener('storage', handleSync);
 
@@ -138,7 +142,53 @@ export default function BarberViewPage() {
   }
 
   return (
-    <div className="max-w-md mx-auto px-4 py-6 space-y-5">
+    <div className="max-w-md mx-auto px-4 py-6 space-y-4">
+      {/* 1. Quick Barber Station Switcher (Ravi, Amit, Imran) */}
+      <div className="bg-charcoal-800 border border-charcoal-700 rounded-2xl p-3 shadow-md space-y-2">
+        <div className="flex items-center justify-between px-1">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400">
+            {t('barber.switchStation')}
+          </span>
+          <span className="text-[10px] text-gold-400 font-semibold">
+            {allBarbers.length} Stations Available
+          </span>
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          {allBarbers.map((b) => {
+            const isCurrent = b.id.toLowerCase() === barberId;
+            const bName = lang === 'gu' ? b.nameGu || b.name : b.name;
+            return (
+              <button
+                key={b.id}
+                type="button"
+                onClick={() => navigate(`/barber/${b.id}`)}
+                className={`min-h-[48px] p-2 rounded-xl flex items-center space-x-2 border transition-all text-left ${
+                  isCurrent
+                    ? 'bg-charcoal-900 border-gold-500 ring-1 ring-gold-500/50 shadow-md'
+                    : 'bg-charcoal-900/60 border-charcoal-700/80 hover:border-charcoal-600'
+                }`}
+              >
+                <img
+                  src={b.photo}
+                  alt={b.name}
+                  className="w-7 h-7 rounded-full object-cover border border-charcoal-600 flex-shrink-0"
+                />
+                <div className="overflow-hidden min-w-0 flex-1">
+                  <span className={`text-xs font-bold block truncate ${isCurrent ? 'text-gold-400' : 'text-gray-200'}`}>
+                    {bName}
+                  </span>
+                  <span className={`text-[9px] font-semibold block truncate ${
+                    b.status === 'free' ? 'text-emerald-400' : b.status === 'busy' ? 'text-amber-400' : 'text-gray-400'
+                  }`}>
+                    {b.status === 'free' ? t('barbers.statusFree') : b.status === 'busy' ? t('barbers.statusBusy') : t('barbers.statusOnBreak')}
+                  </span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {/* Top Header: Stylist Profile & Break Toggle */}
       <div className="bg-charcoal-800 border border-charcoal-700 rounded-2xl p-4 flex items-center justify-between shadow-lg">
         <div className="flex items-center space-x-3">
